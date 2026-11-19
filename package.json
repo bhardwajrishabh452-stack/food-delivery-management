@@ -1,0 +1,21 @@
+{
+  "name": "fds-food-delivery-system",
+  "version": "1.0.0",
+  "description": "Food Delivery & Restaurant Management Platform (FDS)",
+  "type": "module",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev:backend": "node --watch backend/server.js",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build"
+  },
+  "keywords": [
+    "food-delivery",
+    "restaurant-management",
+    "geo-tracking",
+    "order-dispatch",
+    "commission-engine"
+  ],
+  "author": "FDS Team",
+  "license": "ISC"
+}

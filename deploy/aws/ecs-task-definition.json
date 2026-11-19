@@ -1,0 +1,76 @@
+{
+  "family": "fds-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "REPLACED_BY_WORKFLOW",
+  "taskRoleArn": "REPLACED_BY_WORKFLOW",
+  "volumes": [
+    {
+      "name": "fds-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "REPLACED_BY_WORKFLOW",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "REPLACED_BY_WORKFLOW",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "fds-api",
+      "image": "REPLACED_BY_WORKFLOW",
+      "essential": true,
+      "stopTimeout": 30,
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "hostPort": 5000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "5000" },
+        { "name": "TRUST_PROXY", "value": "1" },
+        { "name": "FRONTEND_ORIGIN", "value": "REPLACED_BY_WORKFLOW" },
+        { "name": "PLATFORM_ADMIN_NAME", "value": "Platform Administrator" }
+      ],
+      "secrets": [
+        { "name": "MONGODB_URI", "valueFrom": "REPLACED_BY_WORKFLOW" },
+        { "name": "JWT_SECRET", "valueFrom": "REPLACED_BY_WORKFLOW" },
+        { "name": "DATA_ENCRYPTION_KEY", "valueFrom": "REPLACED_BY_WORKFLOW" },
+        { "name": "PLATFORM_ADMIN_EMAIL", "valueFrom": "REPLACED_BY_WORKFLOW" },
+        { "name": "PLATFORM_ADMIN_PASSWORD", "valueFrom": "REPLACED_BY_WORKFLOW" }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "fds-data",
+          "containerPath": "/app/data",
+          "readOnly": false
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:5000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 90
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/fds-api",
+          "awslogs-region": "REPLACED_BY_WORKFLOW",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

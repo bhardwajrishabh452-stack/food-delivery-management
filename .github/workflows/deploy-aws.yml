@@ -1,0 +1,174 @@
+name: Test and deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fds-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: backend
+      - run: npm test
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ECR_REPOSITORY: ${{ vars.AWS_ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_EXECUTION_ROLE_ARN: ${{ vars.ECS_TASK_EXECUTION_ROLE_ARN }}
+      ECS_TASK_ROLE_ARN: ${{ vars.ECS_TASK_ROLE_ARN }}
+      EFS_FILESYSTEM_ID: ${{ vars.EFS_FILESYSTEM_ID }}
+      EFS_ACCESS_POINT_ID: ${{ vars.EFS_ACCESS_POINT_ID }}
+      FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+      MONGODB_URI_SECRET_ARN: ${{ vars.MONGODB_URI_SECRET_ARN }}
+      JWT_SECRET_ARN: ${{ vars.JWT_SECRET_ARN }}
+      DATA_ENCRYPTION_KEY_SECRET_ARN: ${{ vars.DATA_ENCRYPTION_KEY_SECRET_ARN }}
+      PLATFORM_ADMIN_EMAIL_SECRET_ARN: ${{ vars.PLATFORM_ADMIN_EMAIL_SECRET_ARN }}
+      PLATFORM_ADMIN_PASSWORD_SECRET_ARN: ${{ vars.PLATFORM_ADMIN_PASSWORD_SECRET_ARN }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            AWS_REGION AWS_ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE \
+            ECS_TASK_EXECUTION_ROLE_ARN ECS_TASK_ROLE_ARN \
+            EFS_FILESYSTEM_ID EFS_ACCESS_POINT_ID FRONTEND_ORIGIN \
+            MONGODB_URI_SECRET_ARN JWT_SECRET_ARN DATA_ENCRYPTION_KEY_SECRET_ARN \
+            PLATFORM_ADMIN_EMAIL_SECRET_ARN PLATFORM_ADMIN_PASSWORD_SECRET_ARN \
+            VITE_API_BASE_URL S3_BUCKET CLOUDFRONT_DISTRIBUTION_ID AWS_DEPLOY_ROLE_ARN
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing GitHub Actions variable: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Build frontend for CloudFront
+        run: |
+          npm ci
+          npm run build
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.AWS_ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Render ECS task definition configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq \
+            --arg executionRole "$ECS_TASK_EXECUTION_ROLE_ARN" \
+            --arg taskRole "$ECS_TASK_ROLE_ARN" \
+            --arg efs "$EFS_FILESYSTEM_ID" \
+            --arg accessPoint "$EFS_ACCESS_POINT_ID" \
+            --arg frontendOrigin "$FRONTEND_ORIGIN" \
+            --arg region "$AWS_REGION" \
+            --arg mongoSecret "$MONGODB_URI_SECRET_ARN" \
+            --arg jwtSecret "$JWT_SECRET_ARN" \
+            --arg encryptionSecret "$DATA_ENCRYPTION_KEY_SECRET_ARN" \
+            --arg adminEmailSecret "$PLATFORM_ADMIN_EMAIL_SECRET_ARN" \
+            --arg adminPasswordSecret "$PLATFORM_ADMIN_PASSWORD_SECRET_ARN" \
+            '
+              .executionRoleArn = $executionRole
+              | .taskRoleArn = $taskRole
+              | .volumes[0].efsVolumeConfiguration.fileSystemId = $efs
+              | .volumes[0].efsVolumeConfiguration.authorizationConfig.accessPointId = $accessPoint
+              | .containerDefinitions[0].environment |= map(
+                  if .name == "FRONTEND_ORIGIN" then .value = $frontendOrigin else . end
+                )
+              | .containerDefinitions[0].secrets |= map(
+                  if .name == "MONGODB_URI" then .valueFrom = $mongoSecret
+                  elif .name == "JWT_SECRET" then .valueFrom = $jwtSecret
+                  elif .name == "DATA_ENCRYPTION_KEY" then .valueFrom = $encryptionSecret
+                  elif .name == "PLATFORM_ADMIN_EMAIL" then .valueFrom = $adminEmailSecret
+                  elif .name == "PLATFORM_ADMIN_PASSWORD" then .valueFrom = $adminPasswordSecret
+                  else . end
+                )
+              | .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
+            ' deploy/aws/ecs-task-definition.json > "$RUNNER_TEMP/task-definition.json"
+
+      - name: Render backend image into ECS task definition
+        id: task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ runner.temp }}/task-definition.json
+          container-name: fds-api
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.AWS_ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Deploy backend to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-definition.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
+
+      - name: Publish frontend assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 sync frontend/dist "s3://${S3_BUCKET}" \
+            --delete \
+            --exclude "index.html" \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp frontend/dist/index.html "s3://${S3_BUCKET}/index.html" \
+            --cache-control "no-cache,no-store,must-revalidate"
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/*"

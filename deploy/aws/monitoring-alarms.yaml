@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudWatch alarms for the single-task FDS ECS service and ALB target group.
+
+Parameters:
+  ClusterName:
+    Type: String
+  ServiceName:
+    Type: String
+  LoadBalancerFullName:
+    Type: String
+    Description: ALB dimension value, for example app/fds-alb/0123456789abcdef.
+  TargetGroupFullName:
+    Type: String
+    Description: Target group dimension value, for example targetgroup/fds-api/0123456789abcdef.
+  NotificationTopicArn:
+    Type: AWS::SNS::Topic::TopicArn
+  CpuThreshold:
+    Type: Number
+    Default: 80
+  MemoryThreshold:
+    Type: Number
+    Default: 80
+  Target5xxThreshold:
+    Type: Number
+    Default: 5
+  P95LatencyThresholdSeconds:
+    Type: Number
+    Default: 1
+    Description: Tune this threshold to the service's agreed latency target.
+
+Resources:
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: FDS ECS service CPU has exceeded its configured threshold.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+        - Name: ServiceName
+          Value: !Ref ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref CpuThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: FDS ECS service memory has exceeded its configured threshold.
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+        - Name: ServiceName
+          Value: !Ref ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref MemoryThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+  Target5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: FDS ALB targets are returning elevated 5xx responses.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Target5xxThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+  HighP95LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: FDS ALB target p95 response latency exceeded its configured threshold.
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+      ExtendedStatistic: p95
+      Unit: Seconds
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: !Ref P95LatencyThresholdSeconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+  NoHealthyTargetsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: FDS ALB target group has no healthy ECS targets.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+      Minimum: 1
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref NotificationTopicArn]
