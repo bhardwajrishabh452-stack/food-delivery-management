@@ -214,7 +214,7 @@ export const HomePage = () => {
       </section>
 
       {/* Cuisine Quick Filter Chips */}
-      <section style={{ marginBottom: "32px" }}>
+      <section id="categories" style={{ marginBottom: "32px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <h2 style={{ fontSize: "1.35rem", fontWeight: 700, color: "var(--dark)" }}>
             What's on your mind?
@@ -264,6 +264,7 @@ export const HomePage = () => {
 
       {/* Filter and Sort Bar */}
       <div
+        id="restaurants"
         style={{
           display: "flex",
           flexWrap: "wrap",
